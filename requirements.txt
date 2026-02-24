@@ -1,0 +1,16 @@
+# Waseel Automation - Python Dependencies
+# Python 3.13.5 | Generated 2026-02-24
+
+# Browser automation
+playwright==1.58.0
+
+# HTTP requests (OTP retrieval from webhook.site)
+requests==2.32.3
+
+# Environment variable loading
+python-dotenv==1.2.1
+
+# Playwright dependencies (auto-installed)
+greenlet==3.3.2
+pyee==13.0.1
+typing_extensions==4.15.0

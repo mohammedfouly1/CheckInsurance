@@ -1,0 +1,25 @@
+# Credentials & session — NEVER commit
+.env
+session.json
+
+# Output / runtime data
+eligibility_results.csv
+timing_log.jsonl
+run_log.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
