@@ -12,11 +12,13 @@ import sys
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import sleep, perf_counter
+from time import sleep
 
 import requests
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, BrowserContext, Page
+
+from config import SLOW_MO, VIEWPORT, SETTLE_MS, TIMEOUT_NETWORKIDLE
 
 load_dotenv()
 
@@ -28,7 +30,7 @@ USERNAME          = os.environ["WASEEL_USERNAME"]
 PASSWORD          = os.environ["WASEEL_PASSWORD"]
 WEBHOOK_API_KEY   = os.environ["WEBHOOK_API_KEY"]
 WEBHOOK_SITE_BASE = os.environ["WEBHOOK_SITE_BASE"]
-SESSION_FILE      = Path("session.json")
+SESSION_FILE      = Path(__file__).parent / "session.json"
 
 # ---------------------------------------------------------------------------
 # OTP helpers (webhook.site + SendGrid)
@@ -152,12 +154,12 @@ def delete_webhook_request(token_uuid: str, request_uuid: str, api_key: str) -> 
 # Browser helpers
 # ---------------------------------------------------------------------------
 
-def wait_stable(page: Page, timeout: int = 15000) -> None:
+def wait_stable(page: Page, timeout: int = TIMEOUT_NETWORKIDLE) -> None:
     try:
         page.wait_for_load_state("networkidle", timeout=timeout)
     except Exception:
         pass
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(SETTLE_MS)
 
 
 def sep(label: str) -> None:
@@ -177,18 +179,37 @@ def save_session(context: BrowserContext) -> None:
     print(f"  [SESSION] Saved -> {SESSION_FILE}  ({size:,} bytes)")
 
 
+_CCHI_URL_VALIDATE = "https://eclaims.waseel.com/nphies/beneficiary/add"
+
 def check_session_valid(page: Page) -> bool:
     """
-    Navigate to TARGET_URL with the restored session.
-    Returns True  if the Angular eClaims app loads (session active).
-    Returns False if Keycloak redirects us to the login page.
+    Navigate directly to the CCHI beneficiary page and verify the Angular form
+    actually loaded (national ID search input is present).
+
+    A valid session loads the full Angular app (~200KB+) with the ID input.
+    An expired session returns a redirect/stub page (~13KB) without the input,
+    even if the URL does not contain 'iam.waseel.com' — this was the prior
+    false-positive bug where sso.waseel.com was accepted as VALID.
     """
     try:
-        page.goto(TARGET_URL, wait_until="load", timeout=30000)
+        page.goto(_CCHI_URL_VALIDATE, wait_until="load", timeout=30000)
         wait_stable(page)
-        # Valid session stays on eclaims.waseel.com
-        # Expired session gets redirected to iam.waseel.com (Keycloak)
-        return "iam.waseel.com" not in page.url
+        # Hard redirect to Keycloak login page
+        if "iam.waseel.com" in page.url:
+            print(f"  [SESSION] Redirected to Keycloak: {page.url}")
+            return False
+        # Confirm the Angular CCHI form actually rendered (national ID input present)
+        has_input = page.locator(
+            'input[placeholder*="national ID"], '
+            'input[placeholder*="iqama"], '
+            'input[placeholder*="National ID"], '
+            'input[placeholder*="Iqama"]'
+        ).count() > 0
+        if not has_input:
+            content_len = len(page.content())
+            print(f"  [SESSION] CCHI form not found ({content_len:,} bytes) — session expired")
+            return False
+        return True
     except Exception as exc:
         print(f"  [SESSION] Validity check error: {exc}")
         return False
@@ -270,7 +291,7 @@ def get_logged_in_page(pw) -> tuple:
     Returns (browser, context, page) with an active session on eclaims.waseel.com.
     Handles session restore / full login / session expiry automatically.
     """
-    browser = pw.chromium.launch(headless=False, slow_mo=80)
+    browser = pw.chromium.launch(headless=False, slow_mo=SLOW_MO)
 
     if SESSION_FILE.exists():
         sep("RESTORING SAVED SESSION")
@@ -278,7 +299,7 @@ def get_logged_in_page(pw) -> tuple:
         print(f"  [SESSION] Found {SESSION_FILE}  (saved: {mtime:%Y-%m-%d %H:%M:%S})")
 
         context = browser.new_context(
-            viewport={"width": 1400, "height": 900},
+            viewport=VIEWPORT,
             storage_state=str(SESSION_FILE),
         )
         page = context.new_page()
@@ -295,70 +316,10 @@ def get_logged_in_page(pw) -> tuple:
     else:
         sep("NO SAVED SESSION — FULL LOGIN")
 
-    context = browser.new_context(viewport={"width": 1400, "height": 900})
+    context = browser.new_context(viewport=VIEWPORT)
     page    = context.new_page()
     target_page = do_login(page, context)
     return browser, context, target_page
-
-
-# ---------------------------------------------------------------------------
-# Timer — per-step wall-clock timing with cross-run JSONL log
-# ---------------------------------------------------------------------------
-
-class Timer:
-    """
-    Track wall-clock time for named steps.
-    start(label) / stop(label) pairs.
-    summary()  → prints a bar-chart breakdown.
-    save()     → appends one JSON line to timing_log.jsonl for cross-run analysis.
-    """
-
-    def __init__(self, run_label: str = ""):
-        self._starts:  dict = {}   # label -> perf_counter at start
-        self._elapsed: dict = {}   # label -> elapsed seconds
-        self._order:   list = []   # insertion order
-        self.run_at    = datetime.now()
-        self.run_label = run_label
-
-    def start(self, label: str) -> None:
-        self._starts[label] = perf_counter()
-        if label not in self._order:
-            self._order.append(label)
-
-    def stop(self, label: str) -> float:
-        if label not in self._starts:
-            return 0.0
-        elapsed = perf_counter() - self._starts.pop(label)
-        self._elapsed[label] = elapsed
-        print(f"  [timer] {label}: {elapsed:.2f}s")
-        return elapsed
-
-    def summary(self) -> None:
-        if not self._elapsed:
-            return
-        total = sum(self._elapsed.values())
-        max_t = max(self._elapsed.values()) or 1.0
-        print(f"\n  {'─'*60}")
-        print(f"  TIMING SUMMARY  [{self.run_label}]")
-        print(f"  {'─'*60}")
-        for lbl in self._order:
-            t   = self._elapsed.get(lbl, 0.0)
-            bar = "█" * max(1, round(t / max_t * 20))
-            pct = t / total * 100 if total else 0.0
-            print(f"  {lbl:<35} {t:6.2f}s  {pct:4.1f}%  {bar}")
-        print(f"  {'─'*60}")
-        print(f"  {'TOTAL':<35} {total:6.2f}s")
-        print(f"  {'─'*60}")
-
-    def save(self, filename: str = "timing_log.jsonl") -> None:
-        entry = {
-            "run_at": self.run_at.isoformat(timespec="seconds"),
-            "label":  self.run_label,
-            "steps":  {k: round(self._elapsed.get(k, 0.0), 3) for k in self._order},
-        }
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print(f"  [timer] Log appended → {filename}")
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +331,7 @@ def main() -> None:
     print(f"  {'='*45}")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False, slow_mo=80)
+        browser = pw.chromium.launch(headless=False, slow_mo=SLOW_MO)
 
         if SESSION_FILE.exists():
             # ── try to restore saved session ─────────────────────────────────
@@ -379,7 +340,7 @@ def main() -> None:
             print(f"  [SESSION] Found {SESSION_FILE}  (saved: {mtime:%Y-%m-%d %H:%M:%S})")
 
             context = browser.new_context(
-                viewport={"width": 1400, "height": 900},
+                viewport=VIEWPORT,
                 storage_state=str(SESSION_FILE),
             )
             page = context.new_page()
@@ -394,14 +355,14 @@ def main() -> None:
                 SESSION_FILE.unlink()
                 context.close()
 
-                context = browser.new_context(viewport={"width": 1400, "height": 900})
+                context = browser.new_context(viewport=VIEWPORT)
                 page    = context.new_page()
                 target_page = do_login(page, context)
 
         else:
             # ── no session file: full login ───────────────────────────────────
             sep("NO SAVED SESSION — FULL LOGIN")
-            context = browser.new_context(viewport={"width": 1400, "height": 900})
+            context = browser.new_context(viewport=VIEWPORT)
             page    = context.new_page()
             target_page = do_login(page, context)
 
