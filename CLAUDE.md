@@ -141,6 +141,7 @@ page.locator("mat-radio-button:not(.mat-radio-checked)").first.click()
 | **CCHI dual-condition wait (Improvement 1)** | Single `wait_for_function` resolves on name filled OR `mat-dialog-container` present (8s budget). Payer dropdown wait then guarded by `check_no_record_dialog()` — skipped entirely for NO_INSURANCE IDs. Saves ~5s per NO_INSURANCE ID vs old two-timeout approach. Both in `src/CheckCCHI.run_cchi_inquiry()` and `testing/testing.py`. |
 | **`mat-option` listing (Improvement 2)** | `select_mat_dropdown()` uses `page.evaluate(r"""...""")` single JS call to read all option texts — NEVER `[o.inner_text() for o in .all()]`. The old IPC loop caused a 31s `TimeoutError` on ID 1091123552; now impossible. |
 | **`insurance_payer` empty for fast/TPA** | Backfill from `select_insurance_plan()` return value; Arabic stripped with `arabic_idx` same as `_extract_table_rows`. Applies in both `testing/testing.py` and `src/RequestEligibility.py`. |
+| **Browserless.io remote browser** | Set `BROWSERLESS_API_KEY` in `.env`. `login.is_remote()→True` → `_launch_browser(pw)` calls `pw.chromium.connect_over_cdp(wss://chrome.browserless.io?token=KEY)` instead of `launch()`. All `wait_for_event("close")` calls are guarded with `if not login.is_remote():` — headless remote session exits automatically when browser.close() is called. |
 
 ---
 
@@ -198,6 +199,13 @@ payer_en = rows["Insurance Payer"]  # English only, before first Arabic char
 | `src/session.json` | Auto-managed; do not edit manually |
 | `CLAUDE.md` | This file — Claude session memory |
 | `src/config.py` | Named constants (SLOW_MO, VIEWPORT, timeouts, defaults) |
+
+### .env Keys for Browserless.io (optional — local Chromium used when absent)
+```
+BROWSERLESS_API_KEY=<your-key>   # from browserless.io dashboard
+```
+When set: `login.is_remote()→True`; `_launch_browser(pw)` uses `connect_over_cdp`.
+When absent: local Chromium launches with `headless=False, slow_mo=30`.
 
 ### Run Commands
 ```bash

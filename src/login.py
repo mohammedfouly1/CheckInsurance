@@ -31,6 +31,11 @@ PASSWORD          = os.environ["WASEEL_PASSWORD"]
 WEBHOOK_API_KEY   = os.environ["WEBHOOK_API_KEY"]
 WEBHOOK_SITE_BASE = os.environ["WEBHOOK_SITE_BASE"]
 SESSION_FILE      = Path(__file__).parent / "session.json"
+_BROWSERLESS_KEY    = os.environ.get("BROWSERLESS_API_KEY", "")
+_BROWSERLESS_WS_URL = (
+    f"wss://chrome.browserless.io?token={_BROWSERLESS_KEY}"
+    if _BROWSERLESS_KEY else ""
+)
 
 # ---------------------------------------------------------------------------
 # OTP helpers (webhook.site + SendGrid)
@@ -167,6 +172,22 @@ def sep(label: str) -> None:
     print(f"  {label}")
     print(f"{'─'*60}")
 
+
+def is_remote() -> bool:
+    """True when using Browserless.io (no local browser window open)."""
+    return bool(_BROWSERLESS_KEY)
+
+
+def _launch_browser(pw):
+    """Connect to Browserless.io if configured, otherwise launch local Chromium."""
+    if _BROWSERLESS_WS_URL:
+        print(f"  [BROWSER] Connecting to Browserless.io ...")
+        browser = pw.chromium.connect_over_cdp(_BROWSERLESS_WS_URL)
+        print(f"  [BROWSER] Connected")
+        return browser
+    print(f"  [BROWSER] Launching local Chromium (slow_mo={SLOW_MO})")
+    return pw.chromium.launch(headless=False, slow_mo=SLOW_MO)
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
@@ -291,7 +312,7 @@ def get_logged_in_page(pw) -> tuple:
     Returns (browser, context, page) with an active session on eclaims.waseel.com.
     Handles session restore / full login / session expiry automatically.
     """
-    browser = pw.chromium.launch(headless=False, slow_mo=SLOW_MO)
+    browser = _launch_browser(pw)
 
     if SESSION_FILE.exists():
         sep("RESTORING SAVED SESSION")
@@ -331,7 +352,7 @@ def main() -> None:
     print(f"  {'='*45}")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False, slow_mo=SLOW_MO)
+        browser = _launch_browser(pw)
 
         if SESSION_FILE.exists():
             # ── try to restore saved session ─────────────────────────────────
@@ -370,11 +391,12 @@ def main() -> None:
         print(f"\n  {'='*45}")
         print(f"  Ready  |  {target_page.url}")
         print(f"  {'='*45}")
-        print("\n  Close the browser window to exit.")
-        try:
-            target_page.wait_for_event("close", timeout=120000)
-        except Exception:
-            pass
+        if not is_remote():
+            print("\n  Close the browser window to exit.")
+            try:
+                target_page.wait_for_event("close", timeout=120000)
+            except Exception:
+                pass
         browser.close()
 
 

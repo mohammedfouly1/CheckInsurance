@@ -670,11 +670,12 @@ def main() -> None:
         print(f"\n  {'='*45}")
         print("  Inquiry complete.")
         print(f"  {'='*45}")
-        print("\n  Close the browser window to exit.")
-        try:
-            page.wait_for_event("close", timeout=120000)
-        except Exception:
-            pass
+        if not login.is_remote():
+            print("\n  Close the browser window to exit.")
+            try:
+                page.wait_for_event("close", timeout=120000)
+            except Exception:
+                pass
         browser.close()
 
 
